@@ -36,14 +36,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pandas pyarrow requests huggingface_hub hf_xet
 
-      - name: Fix coordinate file encoding and fetch data
+      - name: Fetch data and preserve diagnostics
         run: |
+          mkdir -p outputs
           sed -i 's/gb18030/utf-8-sig/' data_fetch/fetch_research_data.py
-          python data_fetch/fetch_research_data.py
+          set +e
+          python data_fetch/fetch_research_data.py > outputs/run.log 2>&1
+          echo $? > outputs/exit_code.txt
+          set -e
 
       - name: Show outputs
         if: always()
         run: |
+          cat outputs/run.log || true
           find outputs -maxdepth 1 -type f -printf '%f %s bytes\n' | sort || true
 
       - name: Upload research data
