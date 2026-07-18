@@ -1,0 +1,126 @@
+name: Fetch research datasets
+
+on:
+  push:
+    branches:
+      - data-fetch-20260718
+    paths:
+      - .github/workflows/fetch-research-data.yml
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      HF_HUB_DISABLE_XET: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: data-fetch-20260718
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas pyarrow requests huggingface_hub hf_xet
+
+      - name: Patch prefecture coordinate source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('data_fetch/fetch_research_data.py')
+          text = p.read_text(encoding='utf-8')
+          start = text.index('def fetch_cities()')
+          end = text.index('\n\ndef filter_patents()', start)
+          replacement = '''def fetch_cities() -> list[dict[str, Any]]:
+              url = 'https://raw.githubusercontent.com/pfinal/city/master/region.sql'
+              r = requests.get(url, timeout=120)
+              r.raise_for_status()
+              sql = r.text
+              records = {}
+              pattern = re.compile(r"\\('([0-9]+)','([^']*)','([^']*)','([^']*)','([^']*)'")
+              for rid, name, parent, lon, lat in pattern.findall(sql):
+                  try:
+                      records[rid] = (name, float(lon), float(lat))
+                  except Exception:
+                      pass
+              cities = []
+              municipalities = {110000, 120000, 310000, 500000}
+              for code in CITY_CODES:
+                  rid = str(code)[:2] if code in municipalities else str(code)[:4]
+                  if rid in records:
+                      name, lon, lat = records[rid]
+                      if name == '市辖区' and code in municipalities:
+                          name = {110000:'北京市',120000:'天津市',310000:'上海市',500000:'重庆市'}[code]
+                      cities.append({'省份': '', '城市': name, '城市代码': code, '经度': lon, '纬度': lat})
+                  elif code in FALLBACK:
+                      province, city, lon, lat = FALLBACK[code]
+                      cities.append({'省份': province, '城市': city, '城市代码': code, '经度': lon, '纬度': lat})
+                  else:
+                      raise RuntimeError(f'Coordinate missing: {code}, region id {rid}')
+              pd.DataFrame(cities).to_csv(OUT/'研究城市坐标_298市.csv', index=False, encoding='utf-8-sig')
+              return cities
+          '''
+          p.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          PY
+
+      - name: Fetch patent sample and NASA POWER data
+        run: |
+          mkdir -p outputs
+          set +e
+          python data_fetch/fetch_research_data.py > outputs/run.log 2>&1
+          echo $? > outputs/exit_code.txt
+          set -e
+
+      - name: Download public CPChina crop-pattern dataset
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import requests
+          out = Path('outputs/CPChina_2005_2020')
+          out.mkdir(parents=True, exist_ok=True)
+          api = 'https://api.figshare.com/v2/articles/25106948'
+          meta = requests.get(api, timeout=120)
+          meta.raise_for_status()
+          data = meta.json()
+          (out/'figshare_metadata.json').write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+          for f in data.get('files', []):
+              target = out/f['name']
+              print('Downloading', f['name'], f.get('size'))
+              with requests.get(f['download_url'], stream=True, timeout=300) as r:
+                  r.raise_for_status()
+                  with target.open('wb') as w:
+                      for chunk in r.iter_content(1024*1024):
+                          if chunk:
+                              w.write(chunk)
+          PY
+
+      - name: Show outputs
+        if: always()
+        run: |
+          cat outputs/run.log || true
+          find outputs -type f -printf '%p %s bytes\n' | sort || true
+
+      - name: Upload research data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-data-20260718
+          path: outputs/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 7
