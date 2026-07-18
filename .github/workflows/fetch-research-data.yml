@@ -6,6 +6,9 @@ on:
       - data-fetch-20260718
     paths:
       - .github/workflows/fetch-research-data.yml
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
