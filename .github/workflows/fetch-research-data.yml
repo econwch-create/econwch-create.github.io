@@ -1,0 +1,54 @@
+name: Fetch research datasets
+
+on:
+  push:
+    branches:
+      - data-fetch-20260718
+    paths:
+      - .github/workflows/fetch-research-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      HF_HUB_DISABLE_XET: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: data-fetch-20260718
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas pyarrow requests huggingface_hub hf_xet
+
+      - name: Fix coordinate file encoding and fetch data
+        run: |
+          sed -i 's/gb18030/utf-8-sig/' data_fetch/fetch_research_data.py
+          python data_fetch/fetch_research_data.py
+
+      - name: Show outputs
+        if: always()
+        run: |
+          find outputs -maxdepth 1 -type f -printf '%f %s bytes\n' | sort || true
+
+      - name: Upload research data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-data-20260718
+          path: outputs/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 7
